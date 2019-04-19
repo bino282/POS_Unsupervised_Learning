@@ -1,184 +1,149 @@
+import json
+import os
+import sys
 import math
-class HMM():
-    def __init__(self,probabilities):
-        self.pi = probabilities[0]
-        self.a = probabilities[1]
-        self.b = probabilities[2]
 
-    @staticmethod
-    def log_sum_exp(seq):
-        if abs(min(seq)) > abs(max(seq)):
-            a = min(seq)
-        else:
-            a = max(seq)
+class MyHmm(): # base class for different HMM models
+    def __init__(self,probs):
+        # model is (A, B, pi) where A = Transition probs, B = Emission Probs, pi = initial distribution
+        # a model can be initialized to random parameters using a json file that has a random params model
+        self.A = probs[0]
+        self.states = self.A.keys() # get the list of states
+        self.N = len(self.states) # number of states of the model
+        self.B = probs[1]
+        self.symbols = list(list(self.B.values())[0].keys()) # get the list of symbols, assume that all symbols are listed in the B matrix
+        self.M = len(self.symbols) # number of states of the model
+        self.pi = probs[2]
 
-        total = 0
-        for x in seq:
-            total += math.exp(x - a)
-        return a + math.log(total)
+    def backward(self, obs):
+        self.bwk = [{} for t in range(len(obs))]
+        T = len(obs)
+        # Initialize base cases (t == T)
+        for y in self.states:
+            self.bwk[T-1][y] = 1 #self.A[y]["Final"] #self.pi[y] * self.B[y][obs[0]]
+        for t in reversed(range(T-1)):
+            for y in self.states:
+                self.bwk[t][y] = sum((self.bwk[t+1][y1] * self.A[y][y1] * self.B[y1][obs[t+1]]) for y1 in self.states)
+        prob = sum((self.pi[y]* self.B[y][obs[0]] * self.bwk[0][y]) for y in self.states)
+        return prob,self.bwk
 
-    def forward(self,sequences):
-        N = len(self.pi)
-        alpha = []
+    def forward(self, obs):
+        self.fwd = [{}]     
+        # Initialize base cases (t == 0)
+        for y in self.states:
+            self.fwd[0][y] = self.pi[y] * self.B[y][obs[0]]
+        # Run Forward algorithm for t > 0
+        for t in range(1, len(obs)):
+            self.fwd.append({})     
+            for y in self.states:
+                self.fwd[t][y] = sum((self.fwd[t-1][y0] * self.A[y0][y] * self.B[y][obs[t]]) for y0 in self.states)
+        prob = sum((self.fwd[len(obs) - 1][s]) for s in self.states)
+        return prob,self.fwd
 
-        d1 = {}
-        for i in range(1,N+1):
-            d1[i] = self.pi[i] + self.b[i][sequences[0]]
-        alpha.append(d1)
-        for t in range(1,len(sequences)):
-            d = {}
-            o = sequences[t]
+    def viterbi(self, obs):
+        vit = [{}]
+        path = {}     
+        # Initialize base cases (t == 0)
+        for y in self.states:
+            vit[0][y] = self.pi[y] * self.B[y][obs[0]]
+            path[y] = [y]
+     
+        # Run Viterbi for t > 0
+        for t in range(1, len(obs)):
+            vit.append({})
+            newpath = {}     
+            for y in self.states:
+                (prob, state) = max((vit[t-1][y0] * self.A[y0][y] * self.B[y][obs[t]], y0) for y0 in self.states)
+                vit[t][y] = prob
+                newpath[y] = path[state] + [y]     
+            # Don't need to remember the old paths
+            path = newpath
+        n = 0           # if only one element is observed max is sought in the initialization values
+        if len(obs)!=1:
+            n = t
+        (prob, state) = max((vit[n][y], y) for y in self.states)
+        return (prob, path[state])
 
-            for j in range(1,N+1):
-                sum_seq = []
-                for i in range(1,N+1):
-                    sum_seq.append(alpha[-1][i] + self.a[i][j])
-                d[j] = self.log_sum_exp(sum_seq) + self.b[j][sequences[0]]
+    def forward_backward(self, obs): # returns model given the initial model and observations        
+        gamma = [{} for t in range(len(obs))] # this is needed to keep track of finding a state i at a time t for all i and all t
+        zi = [{} for t in range(len(obs) - 1)]  # this is needed to keep track of finding a state i at a time t and j at a time (t+1) for all i and all j and all t
+        # get alpha and beta tables computes
+        p_obs = self.forward(obs)
+        self.backward(obs)
+        # compute gamma values
+        for t in range(len(obs)):
+            for y in self.states:
+                gamma[t][y] = (self.fwd[t][y] * self.bwk[t][y]) / p_obs
+                if t == 0:
+                    self.pi[y] = gamma[t][y]
+                #compute zi values up to T - 1
+                if t == len(obs) - 1:
+                    continue
+                zi[t][y] = {}
+                for y1 in self.states:
+                    zi[t][y][y1] = self.fwd[t][y] * self.A[y][y1] * self.B[y1][obs[t + 1]] * self.bwk[t + 1][y1] / p_obs
+        # now that we have gamma and zi let us re-estimate
+        for y in self.states:
+            for y1 in self.states:
+                # we will now compute new a_ij
+                val = sum([zi[t][y][y1] for t in range(len(obs) - 1)]) #
+                val /= sum([gamma[t][y] for t in range(len(obs) - 1)])
+                self.A[y][y1] = val
+        # re estimate gamma
+        for y in self.states:
+            for k in self.symbols: # for all symbols vk
+                val = 0.0
+                for t in range(len(obs)):
+                    if obs[t] == k :
+                        val += gamma[t][y]                 
+                val /= sum([gamma[t][y] for t in range(len(obs))])
+                self.B[y][k] = val
+        return
 
-            alpha.append(d)
-        
-        return alpha
-
-    def forward_probability(self, alpha):
-        return self.log_sum_exp(alpha[-1].values())
-
-    def backward(self, sequence):
-        N = len(self.pi)
-        T = len(sequence)
-        beta = []
-
-        dT = {}
-        for i in range(1, N+1):
-            dT[i] = 0
-        beta.append(dT)
-
-        for t in range(T - 2, -1, -1):
-            d = {}
-            o = sequence[t + 1]
-
-            for i in range(1, N+1):
-                sum_seq = []
-                for j in range(1, N+1):
-                    sum_seq.append(self.a[i][j] + self.b[j][o] + beta[-1][j])
-                d[i] = self.log_sum_exp(sum_seq)
-
-            beta.append(d)
-        beta.reverse()
-        return beta
-
-    def backward_probability(self, beta, sequence):
-        N = len(self.pi)
-        sum_seq = []
-
-        for i in range(1, N+1):
-            sum_seq.append(self.pi[i] + self.b[i][sequence[0]] + beta[0][i])
-        return self.log_sum_exp(sum_seq)
-
-    def forward_backward(self, sequence):
-        N = len(self.pi)
-        alpha = self.forward(sequence)
-        beta = self.backward(sequence)
-        T = len(sequence)
-
-        xis = []
-        for t in range(T - 1):
-            xis.append(self.xi_matrix(t, sequence, alpha, beta))
+    def baum_welch(self,observations):
         gammas = []
-        for t in range(T):
-            gammas.append(self.gamma(t, sequence, alpha, beta, xis))
+        zis = []
+        for obs in observations:
+            prob_fwd,fwd = self.forward(obs)
+            prob_bwk,bwk = self.backward(obs)
+            P_O = prob_bwk
+            if P_O==0 :
+                continue
+            P_q_o = {}
+            # compute gamma(P_q_O) values
+            gamma = [{} for t in range(len(obs))]
+            zi = [{} for t in range(len(obs) - 1)]
+            for t in range(len(obs)):
+                for y in self.states:
+                    gamma[t][y] = (fwd[t][y] * bwk[t][y]) / P_O
+                    if t == len(obs) - 1:
+                        continue
+                    zi[t][y] = {}
+                    for y1 in self.states:
+                        zi[t][y][y1] = self.fwd[t][y] * self.A[y][y1] * self.B[y1][obs[t + 1]] * self.bwk[t + 1][y1] / P_O
+            gammas.append(gamma)
+            zis.append(zi)
+        C_q1i = {}
+        C_qi_o = {}
+        C_qi_qj = {}
+        for y in self.states:
+            C_q1i[y] = sum([gammas[o][0][y] for o in range(len(gammas))])
+            C_qi_o[y] = sum([gammas[o][l][y] for o in range(len(gammas)) for l in range(1,len(gammas[o]))])
+        for y1 in self.states:
+            C_qi_qj[y1]= {}
+            for y2 in self.states:
+                C_qi_qj[y1][y2] = sum([zis[o][l][y1][y2] for o in range(len(zis)) for l in range(len(zis[o]))])
+        print(C_q1i)
+        print(C_qi_o)
+        print(C_qi_qj)
+        C_q1 = sum([C_q1i[y] for y in self.states])
+        C_qi = {}
+        for y in self.states:
+            C_qi[y] = sum([C_qi_qj[y][t] for t in self.states])
+        print(C_q1)
+        print(C_qi)
+        for y in self.states:
+            self.pi[y] = C_q1i[y]/C_q1 
 
-        pi_hat = gammas[0]
-        print(gammas[0])
-        print(gammas[1])
-        print(len(gammas))
-        a_hat = {}
-        b_hat = {}
-        for i in range(1, N+1):
-            a_hat[i] = {}
-            b_hat[i] = {}
-
-            sum_seq = []
-            for t in range(T - 1):
-                sum_seq.append(gammas[t][i])
-            a_hat_denom = self.log_sum_exp(sum_seq)
-
-            for j in range(1, N+1):
-                sum_seq = []
-                for t in range(T - 1):
-                    sum_seq.append(xis[t][i][j])
-                a_hat_num = self.log_sum_exp(sum_seq)
-                a_hat[i][j] = a_hat_num - a_hat_denom
-
-            sum_seq = []
-            for t in range(T):
-                sum_seq.append(gammas[t][i])
-            b_hat_denom = self.log_sum_exp(sum_seq)
-            for k in self.b[i]:
-                sum_seq = []
-                for t in range(T):
-                    o = sequence[t]
-                    if o == k:
-                        sum_seq.append(gammas[t][i])
-                b_hat_num = self.log_sum_exp(sum_seq)
-                b_hat[i][k] = b_hat_num - b_hat_denom
-
-        return (pi_hat, a_hat, b_hat)
-
-    def gamma(self, t, sequence, alpha, beta, xis):
-        N = len(self.pi)
-        gamma = {}
-        if t < len(sequence) - 1:
-            xi = xis[t]
-            for i in range(1, N+1):
-                sum_seq = []
-                for j in range(1, N+1):
-                    sum_seq.append(xi[i][j])
-                gamma[i] = self.log_sum_exp(sum_seq)
-        else:
-            sum_seq = []
-            for i in range(1, N+1):
-                gamma[i] = alpha[t][i] + beta[t][i]
-                sum_seq.append(gamma[i])
-
-            denom = self.log_sum_exp(sum_seq)
-
-            for i in range(1, N+1):
-                gamma[i] -= denom
-
-        return gamma
-
-    def xi_matrix(self, t, sequence, alpha, beta):
-        N = len(self.pi)
-        o = sequence[t+1]
-
-        xi = {}
-
-        sum_seq = []
-
-        for i in range(1, N+1):
-            xi[i] = {}
-            for j in range(1, N+1):
-                num = alpha[t][i] + self.a[i][j] \
-                      + self.b[j][o] + beta[t + 1][j]
-                sum_seq.append(num)
-                xi[i][j] = num
-
-        denom = self.log_sum_exp(sum_seq)
-
-        for i in range(1, N+1):
-            for j in range(1, N+1):
-                xi[i][j] -= denom
-
-        return xi
-
-    def update(self, sequence, cutoff_value):
-        increase = cutoff_value + 1
-        while (increase > cutoff_value):
-            before = self.forward_probability(self.forward(sequence))
-            new_p = self.forward_backward(sequence)
-            self.pi = new_p[0]
-            self.a = new_p[1]
-            self.b = new_p[2]
-            after = self.forward_probability(self.forward(sequence))
-            increase = after - before
-
+        
+        
