@@ -9,11 +9,11 @@ from utils import *
 
 
 N = 2
-pi ={"B":1.0/N,"I":1.0/N}
+pi ={"B":2.0/3,"I":1.0/3}
 
 a = {}
 for i in ("B","I"):
-    tmp = {"B":1.0/N,"I":1.0/N}
+    tmp = {"B":1.0/2,"I":1.0/2}
     a[i] = tmp
 
 vocab_list = []
@@ -53,10 +53,16 @@ if __name__ == '__main__':
     # prob, hidden_states = hmm.viterbi(observations)
     # print ("Max Probability = ", prob, " Hidden State Sequence = ", hidden_states)
 
-    hmm = MyHmm([a,b,pi])
+    hmm = MyHmm(vocab_list,["B","I"],pi)
 
     print ("Learning the model through Forward-Backward Algorithm for the observations")
-    hmm.baum_welch(observation_list)
+    for epoch in range(1000):
+        print("Running on epoch : {} ..................".format(epoch))
+        hmm.baum_welch(observation_list)
+        observations = observation_list[0] # you can set this variable to any arbitrary length of observations
+        prob, hidden_states = hmm.viterbi(observations)
+        print(observations)
+        print ("Max Probability = ", prob, " Hidden State Sequence = ", hidden_states)
 
     print ("The new model parameters after 1 iteration are: ")
     # print ("A = ", hmm.A)
